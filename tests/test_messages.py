@@ -42,6 +42,7 @@ class MessageTests(unittest.TestCase):
                     position=1,
                     name="Company A",
                     price=96.0,
+                    distance_to_ref=1.5,
                     distance_to_reference=1.5,
                     distance_to_estimation=4.0,
                     estimation_gap_percent=-4.0,

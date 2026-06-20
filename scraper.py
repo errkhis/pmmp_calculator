@@ -250,98 +250,210 @@ def _extract_labeled_field(soup: BeautifulSoup, pattern: str) -> str:
 
 
 def _extract_estimated_price(soup: BeautifulSoup) -> tuple[Optional[float], str]:
-    text = soup.get_text(" ", strip=True)
-    estimate_patterns = [
-        r"estimation\s*[:\-]?\s*([\d\s.\xa0 ]+,\d{2})",
-        r"co[uû]t estimatif\s*[:\-]?\s*([\d\s.\xa0 ]+,\d{2})",
-    ]
-    for pattern in estimate_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            value = _parse_price_fr(match.group(1))
-            if value is not None:
-                currency = "MAD TTC" if re.search(r"TTC", match.group(0), re.I) else "MAD"
+    for tag in soup.find_all("span", id=re.compile(r"labelReferentielZoneText", re.I)):
+        container = tag.find_parent()
+        if not container:
+            continue
+        context = container.get_text(separator=" ", strip=True)
+        if re.search(r"estimat|prix\s*estimatif|budget|montant", context, re.IGNORECASE):
+            value = _parse_price_fr(tag.get_text(strip=True))
+            if value and value > 100:
+                currency = "MAD TTC" if "TTC" in context else ("MAD HT" if "HT" in context else "MAD")
                 return value, currency
+
+    for tag in soup.find_all(string=re.compile(r"estimation|prix estimatif", re.IGNORECASE)):
+        row = tag.find_parent("tr") or tag.find_parent("div") or tag.find_parent("li")
+        if not row:
+            continue
+        for number in re.findall(r"[\d\s.\xa0 ]+,\d{2}", row.get_text()):
+            value = _parse_price_fr(number)
+            if value and value > 100:
+                return value, "MAD"
     return None, "MAD"
 
 
 def _extract_weights(soup: BeautifulSoup) -> tuple[Optional[float], Optional[float]]:
-    text = soup.get_text(" ", strip=True)
-    technical_match = re.search(r"technique\s*[:\-]?\s*(\d+(?:[.,]\d+)?)\s*%", text, re.I)
-    financial_match = re.search(r"financi[eè]re\s*[:\-]?\s*(\d+(?:[.,]\d+)?)\s*%", text, re.I)
-    technical = _parse_percent(technical_match.group(1)) if technical_match else None
-    financial = _parse_percent(financial_match.group(1)) if financial_match else None
-    return technical, financial
+    technical_weight = None
+    financial_weight = None
+    for tag in soup.find_all(string=re.compile(r"poids|pond[eé]ration|weight", re.IGNORECASE)):
+        row = tag.find_parent("tr")
+        if not row:
+            continue
+        cells = row.find_all(["td", "th"])
+        for index, cell in enumerate(cells):
+            cell_text = cell.get_text(strip=True).lower()
+            if "tech" in cell_text and index + 1 < len(cells):
+                value = _parse_price_fr(cells[index + 1].get_text(strip=True))
+                if value is not None:
+                    technical_weight = value
+            elif "fin" in cell_text and index + 1 < len(cells):
+                value = _parse_price_fr(cells[index + 1].get_text(strip=True))
+                if value is not None:
+                    financial_weight = value
+    return technical_weight, financial_weight
 
 
 def _extract_bidders(soup: BeautifulSoup) -> list[Bidder]:
-    bidders: list[Bidder] = []
-    tables = soup.find_all("table")
-    for table in tables:
-        headers = [th.get_text(" ", strip=True).lower() for th in table.find_all("th")]
-        if not headers:
+    target_table = _find_bidder_table(soup)
+    if not target_table:
+        return []
+
+    rows = target_table.find_all("tr")
+    if len(rows) < 3:
+        return []
+
+    header_idx = 0
+    for index, row in enumerate(rows):
+        text = row.get_text().lower()
+        if "entreprise" in text or "soumissionnaire" in text:
+            header_idx = index
+            break
+
+    data_start = header_idx + 2
+    subheader_row = rows[header_idx + 1] if header_idx + 1 < len(rows) else None
+    columns = _infer_columns(rows[header_idx], subheader_row)
+
+    parsed_rows: list[_ParsedBidderRow] = []
+    for row_index, row in enumerate(rows[data_start:], start=1):
+        cells = row.find_all(["td", "th"])
+        if not cells:
             continue
-        if not any("concurrent" in h or "soumissionnaire" in h or "concurrents" in h for h in headers):
+        texts = [cell.get_text(strip=True) for cell in cells]
+        if len(texts) < 3:
             continue
 
-        for tr in table.find_all("tr"):
-            cells = tr.find_all("td")
-            if len(cells) < 2:
-                continue
-            parsed = _parse_bidder_row(cells)
-            if not parsed or not parsed.name:
-                continue
-            price = parsed.price_after or parsed.price_before or parsed.generic_price
-            bidders.append(
-                Bidder(
-                    rank=parsed.rank,
-                    name=parsed.name,
-                    admin_status=parsed.admin_status,
-                    financial_status=parsed.financial_status,
-                    price=price,
-                    technical_score=parsed.technical_score,
-                    price_before_raw=parsed.price_before_raw,
-                    price_after_raw=parsed.price_after_raw,
-                )
+        name = texts[columns["name"]] if columns["name"] < len(texts) else ""
+        if not name or re.match(r"^\d+$", name) or name.lower() in ("total", ""):
+            continue
+
+        admin_status = texts[columns["admin"]] if columns["admin"] < len(texts) else ""
+        financial_status = texts[columns["fin"]] if columns["fin"] < len(texts) else ""
+        price_before_raw = (
+            texts[columns["price_before"]]
+            if columns["price_before"] is not None and columns["price_before"] < len(texts)
+            else ""
+        )
+        price_after_raw = (
+            texts[columns["price_after"]]
+            if columns["price_after"] is not None and columns["price_after"] < len(texts)
+            else ""
+        )
+        generic_price_raw = (
+            texts[columns["price"]]
+            if columns["price"] is not None and columns["price"] < len(texts)
+            else ""
+        )
+        score_raw = (
+            texts[columns["score"]]
+            if columns["score"] is not None and columns["score"] < len(texts)
+            else ""
+        )
+
+        price_after = _parse_price_fr(price_after_raw)
+        price_before = _parse_price_fr(price_before_raw)
+        generic_price = _parse_price_fr(generic_price_raw)
+        score = _parse_price_fr(score_raw) if score_raw else None
+
+        parsed_rows.append(
+            _ParsedBidderRow(
+                rank=row_index,
+                name=name,
+                admin_status=admin_status,
+                financial_status=financial_status,
+                price_before_raw=price_before_raw,
+                price_after_raw=price_after_raw,
+                price_before=price_before,
+                price_after=price_after,
+                generic_price=generic_price,
+                technical_score=score if score and score <= 100 else None,
             )
-        if bidders:
-            break
+        )
+
+    use_after_prices = any(row.price_after is not None for row in parsed_rows)
+    use_before_prices = not use_after_prices and any(row.price_before is not None for row in parsed_rows)
+
+    bidders: list[Bidder] = []
+    for row in parsed_rows:
+        if use_after_prices:
+            price = row.price_after
+        elif use_before_prices:
+            price = row.price_before
+        else:
+            price = row.generic_price
+
+        bidders.append(
+            Bidder(
+                rank=row.rank,
+                name=row.name,
+                admin_status=row.admin_status,
+                financial_status=row.financial_status,
+                price=price,
+                technical_score=row.technical_score,
+                price_before_raw=row.price_before_raw,
+                price_after_raw=row.price_after_raw,
+            )
+        )
     return bidders
 
 
-def _parse_bidder_row(cells) -> Optional[_ParsedBidderRow]:
-    texts = [cell.get_text(" ", strip=True) for cell in cells]
-    if len(texts) < 2:
-        return None
+def _find_bidder_table(soup: BeautifulSoup) -> Optional[BeautifulSoup]:
+    for table in soup.find_all("table"):
+        text = table.get_text().lower()
+        if ("admissible" in text or "écartée" in text or "ecartee" in text) and "entreprise" in text:
+            return table
 
-    rank = _parse_rank(texts[0]) or 0
-    name = texts[1]
-    admin_status = texts[2] if len(texts) > 2 else ""
-    financial_status = texts[3] if len(texts) > 3 else ""
+    tables = soup.find_all("table")
+    if tables:
+        return max(tables, key=lambda table: len(table.find_all("tr")))
+    return None
 
-    numbers = [_parse_price_fr(text) for text in texts]
-    priced_values = [value for value in numbers if value is not None]
-    generic_price = priced_values[-1] if priced_values else None
 
-    technical_score = None
-    for text in texts:
-        if re.fullmatch(r"\d+(?:[.,]\d+)?", text):
-            value = float(text.replace(",", "."))
-            if 0 <= value <= 100:
-                technical_score = value
+def _infer_columns(header_row, subheader_row) -> dict:
+    columns = {
+        "name": 0,
+        "admin": 1,
+        "fin": 2,
+        "price": 3,
+        "price_before": 3,
+        "price_after": 4,
+        "score": None,
+    }
 
-    return _ParsedBidderRow(
-        rank=rank,
-        name=name,
-        admin_status=admin_status,
-        financial_status=financial_status,
-        price_before_raw=texts[-2] if len(texts) >= 2 else "",
-        price_after_raw=texts[-1] if len(texts) >= 1 else "",
-        price_before=numbers[-2] if len(numbers) >= 2 else None,
-        price_after=numbers[-1] if len(numbers) >= 1 else None,
-        generic_price=generic_price,
-        technical_score=technical_score,
-    )
+    if header_row is None:
+        return columns
+
+    headers = [th.get_text(strip=True).lower() for th in header_row.find_all(["th", "td"])]
+    subheaders = []
+    if subheader_row:
+        subheaders = [th.get_text(strip=True).lower() for th in subheader_row.find_all(["th", "td"])]
+
+    for index, header in enumerate(headers):
+        normalized = _norm(header)
+        if any(key in normalized for key in ["entreprise", "soumissionnaire", "societe", "raison sociale"]):
+            columns["name"] = index
+        elif "admin" in normalized:
+            columns["admin"] = index
+        elif "financ" in normalized:
+            columns["fin"] = index
+        elif any(key in normalized for key in ["note", "score", "technique"]):
+            columns["score"] = index
+
+    generic_price_idx = None
+    for index, header in enumerate(subheaders):
+        normalized = _norm(header)
+        if "apres" in normalized:
+            columns["price_after"] = index
+        elif "avant" in normalized:
+            columns["price_before"] = index
+        elif "prix" in normalized or "montant" in normalized or "offre" in normalized:
+            generic_price_idx = index
+
+    if generic_price_idx is not None:
+        columns["price"] = generic_price_idx
+    if columns["price"] is None:
+        columns["price"] = 3
+
+    return columns
 
 
 def _parse_rank(text: str) -> Optional[int]:
@@ -390,3 +502,18 @@ def _meta_from_url(url: str) -> str:
 def _meta_from_url_param(url: str, name: str) -> Optional[str]:
     match = re.search(rf"[?&]{re.escape(name)}=([^&]+)", url)
     return match.group(1) if match else None
+
+
+def _norm(text: str) -> str:
+    return (
+        text.strip()
+        .lower()
+        .replace("é", "e")
+        .replace("è", "e")
+        .replace("ê", "e")
+        .replace("â", "a")
+        .replace("î", "i")
+        .replace("ô", "o")
+        .replace("û", "u")
+        .replace("ç", "c")
+    )

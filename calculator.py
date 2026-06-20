@@ -9,6 +9,7 @@ class RankedBidder:
     position: int
     name: str
     price: Optional[float]
+    distance_to_ref: Optional[float]
     distance_to_reference: Optional[float]
     distance_to_estimation: Optional[float]
     estimation_gap_percent: Optional[float]
@@ -34,25 +35,92 @@ class LotCalculation:
     rankings: list[RankedBidder] = field(default_factory=list)
 
 
+def calculate_winners(
+    data: ConsultationData,
+) -> tuple[list[RankedBidder], str, Optional[float]]:
+    estimated = data.estimated_price
+
+    priced = [bidder for bidder in data.bidders if bidder.price is not None]
+    no_price = [bidder for bidder in data.bidders if bidder.price is None]
+
+    reference_price: Optional[float] = None
+    if priced and estimated:
+        average_price = sum(bidder.price for bidder in priced) / len(priced)
+        reference_price = (estimated + average_price) / 2
+
+    method = "reference_price"
+
+    below = [bidder for bidder in priced if reference_price is not None and bidder.price <= reference_price]
+    above = [bidder for bidder in priced if reference_price is not None and bidder.price > reference_price]
+    no_ref = sorted([bidder for bidder in priced if reference_price is None], key=lambda bidder: bidder.price)
+
+    below.sort(key=lambda bidder: bidder.price, reverse=True)
+    above.sort(key=lambda bidder: bidder.price)
+
+    if below:
+        ordered = below + above
+    elif above:
+        ordered = above
+    else:
+        ordered = no_ref
+
+    ranked: list[RankedBidder] = []
+    winning_price = ordered[0].price if ordered and reference_price is not None else None
+    for position, bidder in enumerate(ordered, start=1):
+        distance = abs(bidder.price - reference_price) if reference_price else None
+        side = (
+            "below" if reference_price and bidder.price <= reference_price
+            else "above" if reference_price else "N/A"
+        )
+        note = "Winner" if winning_price is not None and bidder.price == winning_price else ""
+        ranked.append(
+            RankedBidder(
+                position=position,
+                name=bidder.name,
+                price=bidder.price,
+                distance_to_ref=round(distance, 2) if distance is not None else None,
+                distance_to_reference=round(distance, 2) if distance is not None else None,
+                distance_to_estimation=_distance(bidder.price, estimated),
+                estimation_gap_percent=_gap_pct(bidder.price, estimated),
+                side=side,
+                admin_status=bidder.admin_status,
+                financial_status=bidder.financial_status,
+                is_eligible=reference_price is not None,
+                note=note,
+            )
+        )
+
+    start = len(ranked) + 1
+    for offset, bidder in enumerate(no_price):
+        ranked.append(
+            RankedBidder(
+                position=start + offset,
+                name=bidder.name,
+                price=bidder.price,
+                distance_to_ref=None,
+                distance_to_reference=None,
+                distance_to_estimation=None,
+                estimation_gap_percent=None,
+                side="N/A",
+                admin_status=bidder.admin_status,
+                financial_status=bidder.financial_status,
+                is_eligible=False,
+                note="Eliminated - no price",
+            )
+        )
+
+    return ranked, method, reference_price
+
+
 def calculate_consultation(data: ConsultationData) -> list[LotCalculation]:
     lots = data.lots or [data]
     return [calculate_lot(lot, index) for index, lot in enumerate(lots, start=1)]
 
 
 def calculate_lot(data: ConsultationData, lot_index: int = 1) -> LotCalculation:
+    rankings, _, reference_price = calculate_winners(data)
     priced = [bidder for bidder in data.bidders if bidder.price is not None]
-    no_price = [bidder for bidder in data.bidders if bidder.price is None]
-
-    average_offer_price = None
-    reference_price = None
-    if priced:
-        average_offer_price = sum(bidder.price for bidder in priced) / len(priced)
-    if priced and data.estimated_price is not None:
-        reference_price = (data.estimated_price + average_offer_price) / 2
-
-    ordered_priced = _order_priced_bidders(priced, reference_price)
-    rankings = _build_rankings(ordered_priced, no_price, reference_price, data.estimated_price)
-
+    average_offer_price = sum(bidder.price for bidder in priced) / len(priced) if priced else None
     eligible_rankings = [ranking for ranking in rankings if ranking.is_eligible]
     winner_names: list[str] = []
     winner_price = None
@@ -61,7 +129,7 @@ def calculate_lot(data: ConsultationData, lot_index: int = 1) -> LotCalculation:
         winner_names = [ranking.name for ranking in eligible_rankings if ranking.price == winner_price]
 
     return LotCalculation(
-        lot_id=data.lot_id or str(lot_index),
+        lot_id=data.lot_id,
         lot_label=data.lot_label,
         bidder_count=len(data.bidders),
         priced_offer_count=len(priced),
@@ -75,64 +143,6 @@ def calculate_lot(data: ConsultationData, lot_index: int = 1) -> LotCalculation:
     )
 
 
-def _order_priced_bidders(priced: list[Bidder], reference_price: Optional[float]) -> list[Bidder]:
-    if reference_price is None:
-        return sorted(priced, key=lambda bidder: bidder.price)
-
-    below = [bidder for bidder in priced if bidder.price <= reference_price]
-    above = [bidder for bidder in priced if bidder.price > reference_price]
-    below.sort(key=lambda bidder: bidder.price, reverse=True)
-    above.sort(key=lambda bidder: bidder.price)
-    return below + above if below else above
-
-
-def _build_rankings(
-    ordered_priced: list[Bidder],
-    no_price: list[Bidder],
-    reference_price: Optional[float],
-    estimated_price: Optional[float],
-) -> list[RankedBidder]:
-    rankings: list[RankedBidder] = []
-    winning_price = ordered_priced[0].price if ordered_priced and reference_price is not None else None
-
-    for position, bidder in enumerate(ordered_priced, start=1):
-        note = "Winner" if winning_price is not None and bidder.price == winning_price else ""
-        rankings.append(
-            RankedBidder(
-                position=position,
-                name=bidder.name,
-                price=bidder.price,
-                distance_to_reference=_distance(bidder.price, reference_price),
-                distance_to_estimation=_distance(bidder.price, estimated_price),
-                estimation_gap_percent=_gap_pct(bidder.price, estimated_price),
-                side=_side(bidder.price, reference_price),
-                admin_status=bidder.admin_status,
-                financial_status=bidder.financial_status,
-                is_eligible=reference_price is not None,
-                note=note,
-            )
-        )
-
-    start = len(rankings) + 1
-    for offset, bidder in enumerate(no_price):
-        rankings.append(
-            RankedBidder(
-                position=start + offset,
-                name=bidder.name,
-                price=None,
-                distance_to_reference=None,
-                distance_to_estimation=None,
-                estimation_gap_percent=None,
-                side="N/A",
-                admin_status=bidder.admin_status,
-                financial_status=bidder.financial_status,
-                is_eligible=False,
-                note="Eliminated - no price",
-            )
-        )
-    return rankings
-
-
 def _distance(value: Optional[float], target: Optional[float]) -> Optional[float]:
     if value is None or target is None:
         return None
@@ -143,12 +153,6 @@ def _gap_pct(value: Optional[float], estimated_price: Optional[float]) -> Option
     if value is None or estimated_price in (None, 0):
         return None
     return _round2(((value - estimated_price) / estimated_price) * 100)
-
-
-def _side(value: Optional[float], reference_price: Optional[float]) -> str:
-    if value is None or reference_price is None:
-        return "N/A"
-    return "below" if value <= reference_price else "above"
 
 
 def _round2(value: Optional[float]) -> Optional[float]:
