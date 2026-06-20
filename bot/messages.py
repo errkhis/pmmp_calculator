@@ -133,21 +133,13 @@ def build_winner_message(reference: str, lots: list[LotCalculation], consultatio
             lines.append("Winner: <b>—</b>")
 
         lines.append("")
-        lines.append("<b>Classement des sociétés valides:</b>")
+        lines.append("<b>Valid ranking:</b>")
         ordered_rankings = _ordered_valid_rankings(lot)
         for i, ranking in enumerate(ordered_rankings, start=1):
             icon = MEDALS[i - 1] if i <= len(MEDALS) else f"{i}."
             lines.append(
                 f"{icon} {esc(ranking.name)} - {fmt_number(ranking.price)} ({fmt_pct(ranking.estimation_gap_percent)})"
             )
-        if ordered_rankings:
-            lines.append("")
-            lines.append("<b>Détails des écarts:</b>")
-            for ranking in ordered_rankings:
-                lines.append(
-                    f"- {esc(ranking.name)}: ΔP <b>{fmt_number(ranking.distance_to_reference)}</b>"
-                    f" | ΔE <b>{fmt_number(ranking.distance_to_estimation)}</b>"
-                )
         lines.append("")
 
     return "\n".join(lines).strip()

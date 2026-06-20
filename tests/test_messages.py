@@ -25,7 +25,7 @@ class MessageTests(unittest.TestCase):
         self.assertIn("Premium", text)
         self.assertIn("unlimited", text)
 
-    def test_build_winner_message_lists_all_companies_in_old_style(self):
+    def test_build_winner_message_lists_all_companies_in_english_only(self):
         lot = LotCalculation(
             lot_id="1",
             lot_label=None,
@@ -69,12 +69,12 @@ class MessageTests(unittest.TestCase):
             ],
         )
         text = build_winner_message("REF-1", [lot], "Object")
-        self.assertIn("<b>Classement des sociétés valides:</b>", text)
+        self.assertIn("<b>Valid ranking:</b>", text)
         self.assertIn("🥇 Company A - 96.00 (-4.00%)", text)
         self.assertIn("🥈 Company B - 99.00 (-1.00%)", text)
-        self.assertIn("<b>Détails des écarts:</b>", text)
-        self.assertIn("ΔP <b>1.50</b>", text)
-        self.assertIn("ΔE <b>4.00</b>", text)
+        self.assertNotIn("Détails des écarts", text)
+        self.assertNotIn("ΔP", text)
+        self.assertNotIn("ΔE", text)
 
 
 if __name__ == "__main__":
