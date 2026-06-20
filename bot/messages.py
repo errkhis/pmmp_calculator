@@ -1,6 +1,8 @@
 from calculator import LotCalculation
 from database import FREE_WINNER_LIMIT, User
 
+MEDALS = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+
 
 def esc(value) -> str:
     return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -131,15 +133,30 @@ def build_winner_message(reference: str, lots: list[LotCalculation], consultatio
             lines.append("Winner: <b>—</b>")
 
         lines.append("")
-        lines.append("<b>Valid ranking</b>")
-        valid_rankings = [ranking for ranking in lot.rankings if ranking.price is not None]
-        for ranking in valid_rankings[:10]:
+        lines.append("<b>Classement des sociétés valides:</b>")
+        ordered_rankings = _ordered_valid_rankings(lot)
+        for i, ranking in enumerate(ordered_rankings, start=1):
+            icon = MEDALS[i - 1] if i <= len(MEDALS) else f"{i}."
             lines.append(
-                f"{ranking.position}. {esc(ranking.name)} - {fmt_number(ranking.price)}"
-                f" | ΔP {fmt_number(ranking.distance_to_reference)}"
-                f" | ΔE {fmt_number(ranking.distance_to_estimation)}"
-                f" | {fmt_pct(ranking.estimation_gap_percent)}"
+                f"{icon} {esc(ranking.name)} - {fmt_number(ranking.price)} ({fmt_pct(ranking.estimation_gap_percent)})"
             )
+        if ordered_rankings:
+            lines.append("")
+            lines.append("<b>Détails des écarts:</b>")
+            for ranking in ordered_rankings:
+                lines.append(
+                    f"- {esc(ranking.name)}: ΔP <b>{fmt_number(ranking.distance_to_reference)}</b>"
+                    f" | ΔE <b>{fmt_number(ranking.distance_to_estimation)}</b>"
+                )
         lines.append("")
 
     return "\n".join(lines).strip()
+
+
+def _ordered_valid_rankings(lot: LotCalculation):
+    priced_rankings = [
+        ranking for ranking in lot.rankings
+        if ranking.price is not None and not ranking.note.startswith("Eliminated")
+    ]
+    eligible = [ranking for ranking in lot.rankings if ranking.is_eligible]
+    return eligible or priced_rankings

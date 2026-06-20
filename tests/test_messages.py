@@ -25,7 +25,7 @@ class MessageTests(unittest.TestCase):
         self.assertIn("Premium", text)
         self.assertIn("unlimited", text)
 
-    def test_build_winner_message_contains_distances(self):
+    def test_build_winner_message_lists_all_companies_in_old_style(self):
         lot = LotCalculation(
             lot_id="1",
             lot_label=None,
@@ -51,13 +51,30 @@ class MessageTests(unittest.TestCase):
                     financial_status="ok",
                     is_eligible=True,
                     note="Winner",
-                )
+                ),
+                RankedBidder(
+                    position=2,
+                    name="Company B",
+                    price=99.0,
+                    distance_to_ref=1.5,
+                    distance_to_reference=1.5,
+                    distance_to_estimation=1.0,
+                    estimation_gap_percent=-1.0,
+                    side="above",
+                    admin_status="ok",
+                    financial_status="ok",
+                    is_eligible=True,
+                    note="",
+                ),
             ],
         )
         text = build_winner_message("REF-1", [lot], "Object")
-        self.assertIn("ΔP", text)
-        self.assertIn("ΔE", text)
-        self.assertIn("Company A", text)
+        self.assertIn("<b>Classement des sociétés valides:</b>", text)
+        self.assertIn("🥇 Company A - 96.00 (-4.00%)", text)
+        self.assertIn("🥈 Company B - 99.00 (-1.00%)", text)
+        self.assertIn("<b>Détails des écarts:</b>", text)
+        self.assertIn("ΔP <b>1.50</b>", text)
+        self.assertIn("ΔE <b>4.00</b>", text)
 
 
 if __name__ == "__main__":
