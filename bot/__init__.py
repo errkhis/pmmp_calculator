@@ -1,0 +1,1 @@
+"""Telegram winner bot package."""
